@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "Molecule.h"
 
 class QuantumSynthAudioProcessor : public juce::AudioProcessor
 {
@@ -30,6 +31,8 @@ public:
 
     void getStateInformation (juce::MemoryBlock&) override {}
     void setStateInformation (const void*, int) override {}
+
+    Molecule molecule;   // loaded from the .itp at construction
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QuantumSynthAudioProcessor)

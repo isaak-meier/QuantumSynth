@@ -3,8 +3,8 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
-class QuantumSynthAudioProcessorEditor : public juce::AudioProcessorEditor
-{
+class QuantumSynthAudioProcessorEditor : public juce::AudioProcessorEditor {
+
 public:
     explicit QuantumSynthAudioProcessorEditor (QuantumSynthAudioProcessor&);
     ~QuantumSynthAudioProcessorEditor() override = default;
@@ -14,6 +14,5 @@ public:
 
 private:
     QuantumSynthAudioProcessor& processorRef;
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QuantumSynthAudioProcessorEditor)
 };
