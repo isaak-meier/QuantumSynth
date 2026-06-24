@@ -1,11 +1,19 @@
 #include "PluginEditor.h"
 #include <cmath>
 
+#ifndef QS_MOLECULES_DIR
+ #define QS_MOLECULES_DIR "Molecules"   // CMake injects the real path
+#endif
+
+static juce::File moleculesDir() {
+    return juce::File (QS_MOLECULES_DIR);
+}
+
 QuantumSynthAudioProcessorEditor::QuantumSynthAudioProcessorEditor (QuantumSynthAudioProcessor& p)
     : AudioProcessorEditor (&p), processorRef (p),
       keyboard (p.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
-    setSize (600, 400);
+    setSize (1200, 800);
     addAndMakeVisible (keyboard);
 
     gainKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
@@ -19,19 +27,92 @@ QuantumSynthAudioProcessorEditor::QuantumSynthAudioProcessorEditor (QuantumSynth
     addAndMakeVisible (gainKnob);
 
     stiffnessKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    stiffnessKnob.setRange (0.0, 50.0, 0.1);
-    stiffnessKnob.setValue (1.0, juce::dontSendNotification);   // .itp default k
+    stiffnessKnob.setRange (-99.0, 100.0, 1.0);                 // % change from file's k
+    stiffnessKnob.setValue (0.0, juce::dontSendNotification);   // 0% = original stiffness
+    stiffnessKnob.setTextValueSuffix ("%");
     stiffnessKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
     stiffnessKnob.onValueChange = [this] {
-        // ponytail: one global stiffness written to every bond; racy read by the
-        // sim thread but benign. Per-bond k if a topology ever varies it.
-        const double k = stiffnessKnob.getValue();
-        for (auto& b : processorRef.molecule.bonds) b.k = k;
+        processorRef.setStiffnessPercent (stiffnessKnob.getValue());
     };
     addAndMakeVisible (stiffnessKnob);
 
-    resetButton.onClick = [this] { processorRef.resetMolecule(); };
+    angleStiffnessKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    angleStiffnessKnob.setRange (-99.0, 100.0, 1.0);                 // % change from file's angle k
+    angleStiffnessKnob.setValue (0.0, juce::dontSendNotification);
+    angleStiffnessKnob.setTextValueSuffix ("%");
+    angleStiffnessKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
+    angleStiffnessKnob.onValueChange = [this] {
+        processorRef.setAngleStiffnessPercent (angleStiffnessKnob.getValue());
+    };
+    addAndMakeVisible (angleStiffnessKnob);
+
+    massKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    massKnob.setRange (0.1, 10.0, 0.0);                 // 0 interval = continuous
+    massKnob.setSkewFactorFromMidPoint (1.0);          // logarithmic: centre = 1.0x
+    massKnob.setValue (1.0, juce::dontSendNotification);
+    massKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
+    massKnob.onValueChange = [this] { processorRef.setMassScale (massKnob.getValue()); };
+    addAndMakeVisible (massKnob);
+
+    resetButton.onClick = [this] {
+        processorRef.resetMolecule();   // back to pristine .gro coords, zero velocity
+        // Defaults (sendNotification so the processor params update too).
+        gainKnob.setValue (0.2, juce::sendNotification);
+        stiffnessKnob.setValue (0.0, juce::sendNotification);
+        angleStiffnessKnob.setValue (0.0, juce::sendNotification);
+        massKnob.setValue (1.0, juce::sendNotification);
+        fitted = false;                 // rescale the view to fit the molecule
+        repaint();
+    };
     addAndMakeVisible (resetButton);
+
+    kickButton.onClick = [this] { processorRef.kickMolecule(); };
+    addAndMakeVisible (kickButton);
+
+    phaseToggle.setToggleState (processorRef.usePhase.load(), juce::dontSendNotification);
+    phaseToggle.onClick = [this] {
+        processorRef.usePhase.store (phaseToggle.getToggleState(), std::memory_order_relaxed);
+    };
+    addAndMakeVisible (phaseToggle);
+
+    filenameField.setText ("out.itp", juce::dontSendNotification);
+    addAndMakeVisible (filenameField);
+
+    saveButton.onClick = [this] {
+        if (! currentMoleculeFolder.isDirectory()) {
+            juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Save failed", "No molecule loaded");
+            return;
+        }
+        auto name = filenameField.getText().trim();
+        if (name.isEmpty()) name = "out.itp";
+        if (! name.endsWithIgnoreCase (".itp")) name += ".itp";
+        // New .itp preset in the current molecule's folder (shares its .gro).
+        const auto file = currentMoleculeFolder.getChildFile (name);
+        const auto err = processorRef.saveMolecule (file);
+        if (err.isEmpty()) {
+            refreshMoleculeList();                          // the new preset shows up in the list
+            for (int i = 0; i < presetItps.size(); ++i)     // select it without reloading
+                if (presetItps[i] == file)
+                    moleculeBox.setSelectedItemIndex (i, juce::dontSendNotification);
+        }
+        juce::NativeMessageBox::showMessageBoxAsync (
+            err.isEmpty() ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+            err.isEmpty() ? "Saved" : "Save failed",
+            err.isEmpty() ? ("Wrote " + file.getFullPathName()) : err);
+    };
+    addAndMakeVisible (saveButton);
+
+    // Molecule dropdown: one entry per .itp preset under Molecules/<molecule>/.
+    refreshMoleculeList();
+    for (int i = 0; i < presetItps.size(); ++i)               // reflect the default load
+        if (presetItps[i].getFileName() == "CO2.itp") {
+            moleculeBox.setSelectedItemIndex (i, juce::dontSendNotification);
+            currentMoleculeFolder = presetItps[i].getParentDirectory();
+            break;
+        }
+    moleculeBox.onChange = [this] { loadSelectedMolecule(); };
+    addAndMakeVisible (moleculeBox);
     openGLContext.setRenderer (this);
     openGLContext.attachTo (*this);
     // ponytail: continuous repaint — cheap here and ready for the physics
@@ -45,6 +126,45 @@ void QuantumSynthAudioProcessorEditor::timerCallback()
     if (showDetail) repaint();   // re-render the live atom/bond readout
 }
 
+void QuantumSynthAudioProcessorEditor::refreshMoleculeList()
+{
+    moleculeBox.clear (juce::dontSendNotification);
+    presetItps.clear();
+    int id = 1;
+    // Each .itp under Molecules/<molecule>/ is its own preset entry. Show just the
+    // molecule name; disambiguate with the preset name only if a folder has several.
+    for (const auto& folder : moleculesDir().findChildFiles (juce::File::findDirectories, false)) {
+        const auto itps = folder.findChildFiles (juce::File::findFiles, false, "*.itp");
+        for (const auto& itp : itps) {
+            presetItps.add (itp);
+            juce::String label = folder.getFileName();
+            if (itps.size() > 1) label += " (" + itp.getFileNameWithoutExtension() + ")";
+            moleculeBox.addItem (label, id++);
+        }
+    }
+}
+
+void QuantumSynthAudioProcessorEditor::loadSelectedMolecule()
+{
+    const int idx = moleculeBox.getSelectedItemIndex();
+    if (idx < 0 || idx >= presetItps.size()) return;
+    const auto itp = presetItps[idx];
+    const auto folder = itp.getParentDirectory();
+    const auto gros = folder.findChildFiles (juce::File::findFiles, false, "*.gro");
+
+    const auto err = processorRef.loadMolecule (itp, gros.isEmpty() ? juce::File() : gros[0]);
+    if (err.isNotEmpty())
+        juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+            "Load failed", err);
+
+    currentMoleculeFolder = folder;                                // save presets here
+    fitted = false;                                                // re-fit to the new molecule
+    stiffnessKnob.setValue (0.0, juce::dontSendNotification);       // knobs back to defaults
+    angleStiffnessKnob.setValue (0.0, juce::dontSendNotification);
+    massKnob.setValue (1.0, juce::dontSendNotification);
+    repaint();
+}
+
 void QuantumSynthAudioProcessorEditor::resized()
 {
     keyboard.setBounds (0, getHeight() - keyboardHeight, getWidth(), keyboardHeight);
@@ -54,7 +174,14 @@ void QuantumSynthAudioProcessorEditor::resized()
     const int kx = px + (panelWidth - 64) / 2;        // centre 64px-wide knobs
     gainKnob.setBounds (kx, 56, 64, 72);
     stiffnessKnob.setBounds (kx, 148, 64, 72);
-    resetButton.setBounds (px + (panelWidth - 80) / 2, 240, 80, 26);
+    angleStiffnessKnob.setBounds (kx, 240, 64, 72);
+    massKnob.setBounds (kx, 332, 64, 72);
+    resetButton.setBounds (px + (panelWidth - 80) / 2, 424, 80, 26);
+    kickButton.setBounds  (px + (panelWidth - 80) / 2, 456, 80, 26);
+    moleculeBox.setBounds (px + 12, 500, panelWidth - 24, 24);     // label at 488
+    phaseToggle.setBounds (px + 16, 532, panelWidth - 24, 24);
+    filenameField.setBounds (px + 12, 578, panelWidth - 24, 22);   // label at 566
+    saveButton.setBounds  (px + (panelWidth - 80) / 2, 606, 80, 26);
 }
 
 QuantumSynthAudioProcessorEditor::~QuantumSynthAudioProcessorEditor()
@@ -226,7 +353,11 @@ void QuantumSynthAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.7f));
     g.setFont (11.0f);
     g.drawText ("gain", kx, 44, 64, 12, juce::Justification::centred);
-    g.drawText ("stiffness", kx, 136, 64, 12, juce::Justification::centred);
+    g.drawText ("bond k", kx, 136, 64, 12, juce::Justification::centred);
+    g.drawText ("angle k", kx, 228, 64, 12, juce::Justification::centred);
+    g.drawText ("mass", kx, 320, 64, 12, juce::Justification::centred);
+    g.drawText ("molecule", px + 12, 488, panelWidth - 24, 12, juce::Justification::centred);
+    g.drawText ("save .itp as", px + 12, 564, panelWidth - 24, 12, juce::Justification::centred);
 
     // Eye toggle, bottom-right: an almond with a pupil; brighter when active.
     const auto eb = eyeBounds().toFloat();
@@ -257,6 +388,15 @@ void QuantumSynthAudioProcessorEditor::paint (juce::Graphics& g)
         const int i2 = (int) (b.atom2 - mol.atoms.data());
         lines.add (juce::String::formatted ("  %d-%d  k=%.2f  r0=%.2f",
                    i1, i2, b.k, b.eqBondLength));
+    }
+    lines.add ("ANGLES");
+    for (const auto& ang : mol.angles) {
+        const int i1 = (int) (ang.atom1 - mol.atoms.data());
+        const int i2 = (int) (ang.atom2 - mol.atoms.data());   // vertex
+        const int i3 = (int) (ang.atom3 - mol.atoms.data());
+        const double th0 = ang.eqAngle * 180.0 / juce::MathConstants<double>::pi;
+        lines.add (juce::String::formatted ("  %d-[%d]-%d  k=%.2f  th0=%.0f deg",
+                   i1, i2, i3, ang.k, th0));
     }
 
     g.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),

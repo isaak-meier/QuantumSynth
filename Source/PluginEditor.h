@@ -25,6 +25,8 @@ public:
 
 private:
     juce::Rectangle<int> eyeBounds() const;   // the toggle hit area (bottom-right)
+    void refreshMoleculeList();               // rescan Molecules/ into the dropdown
+    void loadSelectedMolecule();              // load the .itp preset picked in the dropdown
 
     static constexpr int keyboardHeight = 64;
 
@@ -35,7 +37,16 @@ private:
     juce::MidiKeyboardComponent keyboard;
     juce::Slider gainKnob;
     juce::Slider stiffnessKnob;
+    juce::Slider angleStiffnessKnob;
+    juce::Slider massKnob;
     juce::TextButton resetButton { "reset" };
+    juce::TextButton kickButton { "kick" };
+    juce::ComboBox moleculeBox;
+    juce::Array<juce::File> presetItps;       // one per dropdown item (item id - 1)
+    juce::File currentMoleculeFolder;         // subfolder of the loaded preset, save target
+    juce::ToggleButton phaseToggle { "phase" };
+    juce::TextEditor filenameField;
+    juce::TextButton saveButton { "save" };
     bool showDetail = false;
 
     // View fit, computed once from the rest geometry so vibration doesn't

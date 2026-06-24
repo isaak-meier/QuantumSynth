@@ -5,25 +5,98 @@
 #include "SoundSynth.h"
 #include "Integrator.h"
 
+#ifndef QS_MOLECULES_DIR
+ #define QS_MOLECULES_DIR "Molecules"   // CMake injects the real path
+#endif
+
 QuantumSynthAudioProcessor::QuantumSynthAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    // ponytail: hardcoded dev path — a loaded plugin has no useful cwd.
-    // Replace with a file picker / bundled resource when there's a real UI.
+    // Default molecule; the editor's dropdown can switch to others.
+    const auto co2 = juce::File (QS_MOLECULES_DIR).getChildFile ("CO2");
+    const auto err = loadMolecule (co2.getChildFile ("CO2.itp"), co2.getChildFile ("CO2.gro"));
+    if (err.isNotEmpty())
+        molecule.name = ("load failed: " + err).toStdString();
+}
+
+juce::String QuantumSynthAudioProcessor::loadMolecule (const juce::File& itp, const juce::File& gro)
+{
     try {
-        const juce::String dir = "/Users/isaak/Local System/Super Code/Git/QuantumSynth/Test/";
-        molecule = parseItpFile ((dir + "CO2.itp").toStdString());
-        parseGroFileInto (molecule, (dir + "CO2.gro").toStdString());
-        // ponytail: kick a bond off equilibrium so the sim has something to do.
-        if (! molecule.atoms.empty()) {
-            molecule.atoms.front().x += 0.4;
-            molecule.atoms.front().y += 0.4;
-        }
+        Molecule m = parseItpFile (itp.getFullPathName().toStdString());
+        if (gro.existsAsFile())
+            parseGroFileInto (m, gro.getFullPathName().toStdString());
+
+        // Suspend audio while swapping in the new molecule (processBlock reads it).
+        // ponytail: the GL thread's read is still racy, like the rest of the sim.
+        suspendProcessing (true);
+        molecule = std::move (m);       // vector move keeps atom addresses, so Bond ptrs stay valid
+        initialAtoms = molecule.atoms;  // pristine .gro coords (pre-kick) for reset
+        baseBondK.clear();              // snapshot original stiffness for % changes
+        for (const auto& b : molecule.bonds) baseBondK.push_back (b.k);
+        baseAngleK.clear();             // snapshot original angle stiffness for % changes
+        for (const auto& a : molecule.angles) baseAngleK.push_back (a.k);
+        baseMass.clear();               // snapshot original masses for mass scaling
+        for (const auto& a : molecule.atoms) baseMass.push_back (a.mass);
+        applyKick();   // off-equilibrium start; reset() returns to pristine coords then re-kicks
+        currentNote = -1;
+        suspendProcessing (false);
+        return {};
     } catch (const std::exception& e) {
-        molecule.name = std::string ("load failed: ") + e.what();
+        return juce::String (e.what());
     }
-    initialAtoms = molecule.atoms;   // snapshot the launch state for reset
+}
+
+void QuantumSynthAudioProcessor::kickMolecule()
+{
+    applyKick();
+}
+
+juce::String QuantumSynthAudioProcessor::saveMolecule (const juce::File& itp) const
+{
+    try {
+        writeItpFile (molecule, itp.getFullPathName().toStdString());
+        return {};
+    } catch (const std::exception& e) {
+        return juce::String (e.what());
+    }
+}
+
+void QuantumSynthAudioProcessor::applyKick()
+{
+    // Random per-axis nudge of the front atom, each offset in [-0.3, 0.3)*r0,
+    // so the sim has something to do. ponytail: racy vs. the sim thread.
+    if (molecule.atoms.empty()) return;
+    auto& rng = juce::Random::getSystemRandom();
+    const double r0 = molecule.bonds.empty() ? 1.0 : molecule.bonds.front().eqBondLength;
+    auto kick = [&] { return (rng.nextDouble() * 0.6 - 0.3) * r0; };   // [-0.3, 0.3)*r0
+    Atom& a = molecule.atoms.front();
+    a.x += kick();
+    a.y += kick();
+    a.z += kick();
+}
+
+void QuantumSynthAudioProcessor::setStiffnessPercent (double percent)
+{
+    // ponytail: racy write vs. the sim thread; benign for a toy.
+    const double scale = 1.0 + percent / 100.0;   // -99% -> 0.01x, +100% -> 2x
+    for (size_t i = 0; i < molecule.bonds.size() && i < baseBondK.size(); ++i)
+        molecule.bonds[i].k = baseBondK[i] * scale;
+}
+
+void QuantumSynthAudioProcessor::setAngleStiffnessPercent (double percent)
+{
+    // ponytail: racy write vs. the sim thread; benign for a toy.
+    const double scale = 1.0 + percent / 100.0;
+    for (size_t i = 0; i < molecule.angles.size() && i < baseAngleK.size(); ++i)
+        molecule.angles[i].k = baseAngleK[i] * scale;
+}
+
+void QuantumSynthAudioProcessor::setMassScale (double factor)
+{
+    // ponytail: racy write vs. the sim thread; benign for a toy.
+    for (size_t i = 0; i < molecule.atoms.size() && i < baseMass.size(); ++i)
+        molecule.atoms[i].mass = baseMass[i] * factor;
 }
 
 void QuantumSynthAudioProcessor::resetMolecule()
@@ -31,6 +104,7 @@ void QuantumSynthAudioProcessor::resetMolecule()
     // ponytail: racy write vs. the sim thread; benign for a toy.
     for (size_t i = 0; i < molecule.atoms.size() && i < initialAtoms.size(); ++i)
         molecule.atoms[i] = initialAtoms[i];   // position + velocity (bonds untouched)
+    applyKick();   // re-apply a fresh random kick so the molecule moves again
 }
 
 void QuantumSynthAudioProcessor::prepareToPlay (double sr, int)
@@ -64,7 +138,8 @@ void QuantumSynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         for (int n = from; n < to; ++n) {
             step (molecule, simDt);                                  // advance physics
             const float s = currentNote < 0 ? 0.0f                    // gated silent
-                          : gain * (float) moleculeSample (molecule, tSeconds, freq);
+                          : gain * (float) moleculeSample (molecule, tSeconds, freq,
+                                                           usePhase.load (std::memory_order_relaxed));
             for (int ch = 0; ch < numCh; ++ch)
                 buffer.setSample (ch, n, s);
 

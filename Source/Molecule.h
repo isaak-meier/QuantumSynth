@@ -22,8 +22,19 @@ struct Bond {
     Atom * atom2;               // index into Molecule::atoms
 };
 
+// Harmonic angle: U = 1/2 k (theta - eqAngle)^2, with theta the angle at the
+// vertex (atom2) between the rays atom2->atom1 and atom2->atom3.
+struct Angle {
+    double k = 0.0;             // angle stiffness
+    double eqAngle = 0.0;       // equilibrium angle, radians
+    Atom * atom1;               // outer atom
+    Atom * atom2;               // vertex (middle atom)
+    Atom * atom3;               // outer atom
+};
+
 struct Molecule {
     std::string name;
     std::vector<Atom> atoms;
     std::vector<Bond> bonds;
+    std::vector<Angle> angles;
 };

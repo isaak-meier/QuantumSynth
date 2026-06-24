@@ -12,7 +12,8 @@
 //
 // freq defaults to 0 (no carrier) — MIDI will supply it later. Per-bond pitch
 // (e.g. sqrt(k/reduced-mass)) is another option if MIDI isn't the only driver.
-inline double moleculeSample (const Molecule & m, double t, double freqHz = 0.0) {
+inline double moleculeSample (const Molecule & m, double t, double freqHz = 0.0,
+                              bool usePhase = true) {
     const double w = 2.0 * M_PI * freqHz * t;
     double out = 0.0;
     for (const auto & b : m.bonds) {
@@ -24,8 +25,10 @@ inline double moleculeSample (const Molecule & m, double t, double freqHz = 0.0)
         // amplitude = |displacement from equilibrium|, capped at twice r0
         const double disp  = r - b.eqBondLength;
         const double amp   = std::min (std::abs (disp), 2.0 * b.eqBondLength);
-        const double phase = std::acos (std::clamp (dx / r, -1.0, 1.0))   // angle to (1,0,0)
-                           + (disp < 0.0 ? M_PI : 0.0);                   // compression flip
+        const double phase = usePhase
+            ? std::acos (std::clamp (dx / r, -1.0, 1.0))    // angle to (1,0,0)
+              + (disp < 0.0 ? M_PI : 0.0)                   // compression flip
+            : 0.0;
         out += amp * std::sin (w + phase);
     }
     return out;

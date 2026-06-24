@@ -6,3 +6,4 @@ Test/test_gro
 Test/test_forces
 Test/test_integrator
 Test/test_sound
+Test/test_angles

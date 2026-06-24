@@ -32,6 +32,10 @@ target_compile_definitions(QuantumSynth PUBLIC
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
 
+# Bake this checkout's Molecules/ path in so it builds & runs anywhere.
+target_compile_definitions(QuantumSynth PRIVATE
+    QS_MOLECULES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Molecules")
+
 target_link_libraries(QuantumSynth PRIVATE
     juce::juce_audio_utils
     juce::juce_opengl
