@@ -1,5 +1,14 @@
 {
   "worktree": {
     "bgIsolation": "none"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build build:*)",
+      "Bash(cmake -S . -B build:*)",
+      "Bash(pkill -f QuantumSynth_artefacts/Standalone:*)",
+      "Bash(open build/QuantumSynth_artefacts/Standalone/QuantumSynth.app:*)",
+      "Bash(pgrep:*)"
+    ]
   }
 }

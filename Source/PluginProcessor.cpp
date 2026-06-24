@@ -39,7 +39,7 @@ juce::String QuantumSynthAudioProcessor::loadMolecule (const juce::File& itp, co
         baseMass.clear();               // snapshot original masses for mass scaling
         for (const auto& a : molecule.atoms) baseMass.push_back (a.mass);
         applyKick();   // off-equilibrium start; reset() returns to pristine coords then re-kicks
-        currentNote = -1;
+        voices = {};   // silence any held notes on reload
         suspendProcessing (false);
         return {};
     } catch (const std::exception& e) {
@@ -50,6 +50,18 @@ juce::String QuantumSynthAudioProcessor::loadMolecule (const juce::File& itp, co
 void QuantumSynthAudioProcessor::kickMolecule()
 {
     applyKick();
+}
+
+void QuantumSynthAudioProcessor::setHeldAtom (int index, double x, double y)
+{
+    heldX.store (x, std::memory_order_relaxed);
+    heldY.store (y, std::memory_order_relaxed);
+    heldAtom.store (index, std::memory_order_relaxed);
+}
+
+void QuantumSynthAudioProcessor::clearHeldAtom()
+{
+    heldAtom.store (-1, std::memory_order_relaxed);
 }
 
 juce::String QuantumSynthAudioProcessor::saveMolecule (const juce::File& itp) const
@@ -125,21 +137,40 @@ void QuantumSynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     keyboardState.processNextMidiBuffer (midi, 0, numSamples, true);
 
     // Sim runs here, on the audio thread, so the modulation evolves smoothly
-    // per sample instead of in graphics-frame steps. simSpeed matches the old
-    // visual pace (was 60fps * 20 substeps * 0.006).
-    constexpr double simSpeed = 7.2;
-    const double simDt = simSpeed / sampleRate;
+    // per sample instead of in graphics-frame steps. The timestep dial sets
+    // simSpeed (sim units/sec).
+    const double simDt = simSpeed.load (std::memory_order_relaxed) / sampleRate;
+
+    const bool ph = usePhase.load (std::memory_order_relaxed);
+    const int  wv = waveform.load (std::memory_order_relaxed);
+    const float attRate = (float) (1.0 / (0.005 * sampleRate));   // ~5ms attack
+    const float relRate = (float) (1.0 / (0.080 * sampleRate));   // ~80ms release
 
     // ponytail: reads molecule positions that the editor's sim thread writes —
     // a benign race for a toy; snapshot/lock if it audibly glitches.
     auto render = [&] (int from, int to) {
-        const double freq = currentNote >= 0
-            ? juce::MidiMessage::getMidiNoteInHertz (currentNote) : 0.0;
         for (int n = from; n < to; ++n) {
             step (molecule, simDt);                                  // advance physics
-            const float s = currentNote < 0 ? 0.0f                    // gated silent
-                          : gain * (float) moleculeSample (molecule, tSeconds, freq,
-                                                           usePhase.load (std::memory_order_relaxed));
+
+            // Pin a dragged atom to the mouse target; the rest follow via bonds.
+            const int hi = heldAtom.load (std::memory_order_relaxed);
+            if (hi >= 0 && hi < (int) molecule.atoms.size()) {
+                Atom& a = molecule.atoms[(size_t) hi];
+                a.x = heldX.load (std::memory_order_relaxed);
+                a.y = heldY.load (std::memory_order_relaxed);
+                a.vx = a.vy = a.vz = 0.0;
+            }
+
+            // Sum all active voices reading the shared molecule at their pitch.
+            float mix = 0.0f;
+            for (auto& v : voices) {
+                if (v.note < 0 && v.level <= 0.0f) continue;
+                v.level = v.held ? juce::jmin (1.0f, v.level + attRate)
+                                 : juce::jmax (0.0f, v.level - relRate);
+                if (! v.held && v.level <= 0.0f) { v.note = -1; continue; }   // free spent voice
+                mix += v.level * (float) moleculeSample (molecule, tSeconds, v.freq, ph, wv);
+            }
+            const float s = gain * mix;
             for (int ch = 0; ch < numCh; ++ch)
                 buffer.setSample (ch, n, s);
 
@@ -156,12 +187,31 @@ void QuantumSynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const int ts = juce::jlimit (0, numSamples, meta.samplePosition);
         render (cursor, ts);
         cursor = ts;
-        if (msg.isNoteOn())
-            currentNote = msg.getNoteNumber();
-        else if (msg.isNoteOff() && msg.getNoteNumber() == currentNote)
-            currentNote = -1;
+        if (msg.isNoteOn())       voiceNoteOn (msg.getNoteNumber());
+        else if (msg.isNoteOff()) voiceNoteOff (msg.getNoteNumber());
     }
     render (cursor, numSamples);
+}
+
+void QuantumSynthAudioProcessor::voiceNoteOn (int note)
+{
+    // Reuse a voice already on this note, else a free slot, else steal the quietest.
+    int slot = -1, freeSlot = -1, quietest = 0;
+    for (int i = 0; i < kMaxVoices; ++i) {
+        if (voices[i].note == note) { slot = i; break; }
+        if (voices[i].note < 0 && voices[i].level <= 0.0f && freeSlot < 0) freeSlot = i;
+        if (voices[i].level < voices[quietest].level) quietest = i;
+    }
+    if (slot < 0) slot = (freeSlot >= 0) ? freeSlot : quietest;
+    voices[slot].note = note;
+    voices[slot].freq = juce::MidiMessage::getMidiNoteInHertz (note);
+    voices[slot].held = true;
+}
+
+void QuantumSynthAudioProcessor::voiceNoteOff (int note)
+{
+    for (auto& v : voices)
+        if (v.note == note && v.held) v.held = false;   // enter release
 }
 
 juce::AudioProcessorEditor* QuantumSynthAudioProcessor::createEditor()

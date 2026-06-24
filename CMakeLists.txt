@@ -21,6 +21,12 @@ juce_add_plugin(QuantumSynth
 
 juce_generate_juce_header(QuantumSynth)
 
+# Bundle the MOLECULA design fonts as binary data.
+juce_add_binary_data(QuantumSynthFonts SOURCES
+    Source/Fonts/SpaceGrotesk.ttf
+    Source/Fonts/JetBrainsMono.ttf
+    Source/Fonts/Inter.ttf)
+
 target_sources(QuantumSynth PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
@@ -39,6 +45,7 @@ target_compile_definitions(QuantumSynth PRIVATE
 target_link_libraries(QuantumSynth PRIVATE
     juce::juce_audio_utils
     juce::juce_opengl
+    QuantumSynthFonts
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
