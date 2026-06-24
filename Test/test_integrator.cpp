@@ -31,5 +31,18 @@ int main() {
 
     // It must actually oscillate: pass back through ~equilibrium (1.0) and not blow up.
     assert(minR < 1.05 && maxR > 1.45 && maxR < 2.0);
+
+    // Bond stretch is hard-limited to (1 + MAX_STRETCH)*r0 = 2.5 for r0=1.
+    // Yank an oxygen far out; one tiny step should pull the bond back to 2.5.
+    {
+        Molecule m2 = parseItpFile("CO2.itp");
+        parseGroFileInto(m2, "CO2.gro");
+        m2.atoms[1].x = 10.0;                 // way past the limit
+        step(m2, 1e-5);                       // dt tiny so integration barely moves it
+        const double r = m2.atoms[1].x - m2.atoms[0].x;
+        assert(r < 2.5 + 1e-3);               // clamped, not 9
+        assert(std::abs(r - 2.5) < 1e-2);     // pulled right to the limit
+    }
+
     std::cout << "all assertions passed  (r in [" << minR << ", " << maxR << "])\n";
 }

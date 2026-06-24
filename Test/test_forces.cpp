@@ -10,6 +10,8 @@
 int main() {
     Molecule m = parseItpFile("CO2.itp");
     parseGroFileInto(m, "CO2.gro");
+    m.angles.clear();                               // isolate the bond force -> test_angles
+    for (auto& b : m.bonds) { b.k = 1.0; b.eqBondLength = 1.0; }  // fix params, ignore file values
 
     // 2) Stretch: pull the +x oxygen (atom 1) from x=1 out to x=1.5.
     m.atoms[1].x = 1.5;

@@ -60,5 +60,12 @@ int main() {
         assert(std::abs(moleculeSample(m, 0.0, f) - 2.0) < 1e-9);
     }
 
+    // Phase disabled: phase term is 0, so a vertical bond (amp 1) reads
+    // amp*sin(w) instead of amp*sin(w + pi/2). At t=0 that's 0, not 1.
+    {
+        Molecule m = oneBond(0, 2, 0, 1);
+        assert(std::abs(moleculeSample(m, 0.0, f, /*usePhase=*/false)) < 1e-9);
+    }
+
     std::cout << "all assertions passed\n";
 }
