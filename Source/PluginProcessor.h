@@ -33,7 +33,22 @@ public:
     void setStateInformation (const void*, int) override {}
 
     Molecule molecule;   // loaded from the .itp at construction
+    void resetMolecule();   // restore atoms to their initial position & velocity
+
+    juce::MidiKeyboardState keyboardState;   // shared with the editor's keyboard
+    std::atomic<float> outputGain { 0.2f };  // molecule signal level, driven by the knob
+
+    // Scope ring buffer of recent output samples, for the editor's waveform
+    // display. ponytail: plain array, racy GUI read — it's a scope, not data.
+    static constexpr int scopeSize = 1024;   // power of two
+    float scope[scopeSize] = {};
+    std::atomic<int> scopeWrite { 0 };
 
 private:
+    double sampleRate = 44100.0;
+    double tSeconds = 0.0;        // oscillator time, advanced per sample
+    int currentNote = -1;         // held MIDI note, -1 = none (monophonic)
+    std::vector<Atom> initialAtoms;   // snapshot for resetMolecule()
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QuantumSynthAudioProcessor)
 };

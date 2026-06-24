@@ -1,3 +1,8 @@
 build/
 .DS_Store
 Test/test_itp
+Test/test_gro
+
+Test/test_forces
+Test/test_integrator
+Test/test_sound
