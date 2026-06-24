@@ -20,52 +20,46 @@ static Molecule oneBond(double x2, double y2, double z2, double r0) {
 int main() {
     const double f = 100.0;
 
-    // Bond straight up (+y): r=2, r0=1 -> amp=1; angle to x-axis = pi/2.
-    // At t=0: 1 * sin(0 + pi/2) = 1.
+    // Displacement is the phase. Stretch so disp = pi/2 (r = r0 + pi/2).
+    // At t=0: osc(sine, 0 + pi/2) = sin(pi/2) = 1.  (unit amplitude per bond)
     {
-        Molecule m = oneBond(0, 2, 0, 1);
+        Molecule m = oneBond(0, 1.0 + M_PI / 2.0, 0, 1.0);
         assert(std::abs(moleculeSample(m, 0.0, f) - 1.0) < 1e-9);
     }
 
-    // Bond along +x: angle = 0 -> phase 0; at t=0 sin(0) = 0 regardless of amp.
-    {
-        Molecule m = oneBond(2, 0, 0, 1);   // amp = 1
-        assert(std::abs(moleculeSample(m, 0.0, f) - 0.0) < 1e-9);
-    }
-
-    // Diagonal (1,1,0): r=sqrt2, amp=sqrt2-1, angle=pi/4; t=0 -> amp*sin(pi/4).
-    {
-        Molecule m = oneBond(1, 1, 0, 1);
-        const double expect = (std::sqrt(2.0) - 1.0) * std::sin(M_PI / 4.0);
-        assert(std::abs(moleculeSample(m, 0.0, f) - expect) < 1e-9);
-    }
-
-    // At equilibrium amp = 0 -> silence at all times.
+    // At equilibrium disp = 0 -> phase 0 -> sin(2*pi*f*t); at t=0 that's 0.
+    // But the molecule is NOT silent at equilibrium for t!=0 (constant amplitude).
     {
         Molecule m = oneBond(0, 1, 0, 1);
-        assert(std::abs(moleculeSample(m, 0.123, f)) < 1e-9);
+        assert(std::abs(moleculeSample(m, 0.0, f)) < 1e-9);            // t=0 -> sin(0)=0
+        assert(std::abs(moleculeSample(m, 0.0025, f) - std::sin(2.0 * M_PI * f * 0.0025)) < 1e-9);
     }
 
-    // Compressed bond: r=0.5, r0=1 -> amp=0.5, but compression adds pi to phase.
-    // angle = pi/2, phase = pi/2 + pi; t=0 -> 0.5 * sin(3pi/2) = -0.5.
+    // Phase disabled -> phase 0 regardless of displacement; at t=0 -> 0.
     {
-        Molecule m = oneBond(0, 0.5, 0, 1);
-        assert(std::abs(moleculeSample(m, 0.0, f) - (-0.5)) < 1e-9);
-    }
-
-    // Huge stretch: r=5, r0=1 -> disp=4, clamped to 2*r0 = 2.
-    // angle = pi/2, t=0 -> 2.0, not 4.
-    {
-        Molecule m = oneBond(0, 5, 0, 1);
-        assert(std::abs(moleculeSample(m, 0.0, f) - 2.0) < 1e-9);
-    }
-
-    // Phase disabled: phase term is 0, so a vertical bond (amp 1) reads
-    // amp*sin(w) instead of amp*sin(w + pi/2). At t=0 that's 0, not 1.
-    {
-        Molecule m = oneBond(0, 2, 0, 1);
+        Molecule m = oneBond(0, 1.0 + M_PI / 2.0, 0, 1.0);
         assert(std::abs(moleculeSample(m, 0.0, f, /*usePhase=*/false)) < 1e-9);
     }
+
+    // Amplitude is bond-count independent (averaged): two bonds with the same
+    // displacement read the same as one (not double).
+    {
+        Molecule m;
+        m.atoms.resize(3);
+        m.atoms[1].y =  1.0 + M_PI / 2.0;   // bond 0 stretched, disp = pi/2
+        m.atoms[2].y = -(1.0 + M_PI / 2.0); // bond 1 stretched, disp = pi/2
+        Bond b0; b0.eqBondLength = 1.0; b0.atom1 = &m.atoms[0]; b0.atom2 = &m.atoms[1];
+        Bond b1; b1.eqBondLength = 1.0; b1.atom1 = &m.atoms[0]; b1.atom2 = &m.atoms[2];
+        m.bonds = { b0, b1 };
+        assert(std::abs(moleculeSample(m, 0.0, f) - 1.0) < 1e-9);   // not 2.0
+    }
+
+    // Oscillator shapes at known phases.
+    assert(std::abs(oscillate(0, M_PI / 2) - 1.0) < 1e-9);   // sine peak
+    assert(std::abs(oscillate(1, 0.0)) < 1e-9);              // triangle zero-crossing
+    assert(std::abs(oscillate(2, M_PI) - 0.0) < 1e-9);       // sawtooth midpoint
+    assert(std::abs(oscillate(3, 0.5) - 1.0) < 1e-9);        // square high
+    assert(std::abs(oscillate(3, -0.5) + 1.0) < 1e-9);       // square low
 
     std::cout << "all assertions passed\n";
 }
