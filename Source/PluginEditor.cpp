@@ -296,6 +296,11 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
     glEnable (GL_BLEND);
     glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // Palette accents cycled across atoms / bonds / scope rings.
+    const juce::Colour accents[4] = { juce::Colour (molecula::kPlasma), juce::Colour (molecula::kPhosphor),
+                                      juce::Colour (molecula::kAmber),  juce::Colour (molecula::kDanger) };
+    auto atomColour = [&] (int i) { return accents[(i % 4 + 4) % 4]; };
+
     auto V = [&] (float x, float y) { glVertex2f (x / aspect, y); };
     auto disc = [&] (float ox, float oy, float rad, juce::Colour c) {
         constexpr int segs = 28;
@@ -309,7 +314,23 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
         glEnd();
     };
 
-    // Bonds as snakes: an undulating ribbon that slithers, with a little head.
+    // Bonds. Large molecules (>8 atoms) get cheap straight lines; small ones
+    // get the animated snake ribbons.
+    const bool simple = n > 8;
+    if (simple) {
+        glLineWidth (1.5f);
+        glColor4f (0.31f, 0.76f, 0.97f, 0.9f);   // plasma
+        glBegin (GL_LINES);
+        for (const auto& b : mol.bonds) {
+            const auto j1 = (size_t) (b.atom1 - mol.atoms.data());
+            const auto j2 = (size_t) (b.atom2 - mol.atoms.data());
+            V (pos[j1].x, pos[j1].y);
+            V (pos[j2].x, pos[j2].y);
+        }
+        glEnd();
+    } else
+    // Bonds as clean gradient bars: tinted from each atom's palette colour, with
+    // a soft glow underneath. (Replaces the old animated snakes.)
     for (const auto& b : mol.bonds) {
         const auto i1 = (size_t) (b.atom1 - mol.atoms.data());
         const auto i2 = (size_t) (b.atom2 - mol.atoms.data());
@@ -317,46 +338,28 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
         const float dx = c.x - a.x, dy = c.y - a.y;
         const float L = std::sqrt (dx * dx + dy * dy);
         if (L < 1e-4f) continue;
-        const float ux = dx / L, uy = dy / L;       // along bond
-        const float px = -uy, py = ux;              // perpendicular
-        const float amp = 0.07f, waves = 3.0f, phase = (float) t * 5.0f + (float) i1;
-        const int N = 48;
-        const float halfW = 0.022f;
-
-        glBegin (GL_TRIANGLE_STRIP);
-        for (int k = 0; k <= N; ++k) {
-            const float s = (float) k / (float) N;
-            const float env = std::sin (s * juce::MathConstants<float>::pi);   // 0 at ends
-            const float off = amp * env * std::sin (s * waves * twoPi + phase);
-            const float w = halfW * (0.35f + 0.65f * env);
-            const float bx = a.x + dx * s + px * off;
-            const float by = a.y + dy * s + py * off;
-            const float scaleStripe = 0.55f + 0.45f * std::sin (s * 26.0f - (float) t * 6.0f);
-            glColor4f (0.31f * scaleStripe, 0.76f * scaleStripe, 0.97f * scaleStripe, 0.95f);  // plasma shimmer
-            V (bx + px * w, by + py * w);
-            V (bx - px * w, by - py * w);
-        }
-        glEnd();
-
-        // Head near atom2 end, with eyes and a flicking forked tongue.
-        const float hs = 0.86f;
-        const float hoff = amp * std::sin (juce::MathConstants<float>::pi * hs)
-                               * std::sin (hs * waves * twoPi + phase);
-        const float hx = a.x + dx * hs + px * hoff, hy = a.y + dy * hs + py * hoff;
-        disc (hx, hy, 0.04f, juce::Colour (molecula::kPlasma));
-        disc (hx + px * 0.015f + ux * 0.012f, hy + py * 0.015f + uy * 0.012f, 0.008f, juce::Colour (molecula::kVoid));
-        disc (hx - px * 0.015f + ux * 0.012f, hy - py * 0.015f + uy * 0.012f, 0.008f, juce::Colour (molecula::kVoid));
-        const float flick = 0.012f * (0.5f + 0.5f * std::sin ((float) t * 18.0f));
-        glColor4f (1.0f, 0.29f, 0.42f, 0.9f);   // danger-red tongue
-        glLineWidth (2.0f);
-        glBegin (GL_LINES);
-        V (hx + ux * 0.04f, hy + uy * 0.04f);
-        V (hx + ux * (0.06f + flick) + px * 0.012f, hy + uy * (0.06f + flick) + py * 0.012f);
-        V (hx + ux * 0.04f, hy + uy * 0.04f);
-        V (hx + ux * (0.06f + flick) - px * 0.012f, hy + uy * (0.06f + flick) - py * 0.012f);
-        glEnd();
+        const float px = -dy / L, py = dx / L;       // perpendicular unit
+        const auto col1 = atomColour ((int) i1), col2 = atomColour ((int) i2);
+        auto bar = [&] (float w, float alpha) {
+            glBegin (GL_QUADS);
+            glColor4f (col1.getFloatRed(), col1.getFloatGreen(), col1.getFloatBlue(), alpha);
+            V (a.x + px * w, a.y + py * w);  V (a.x - px * w, a.y - py * w);
+            glColor4f (col2.getFloatRed(), col2.getFloatGreen(), col2.getFloatBlue(), alpha);
+            V (c.x - px * w, c.y - py * w);  V (c.x + px * w, c.y + py * w);
+            glEnd();
+        };
+        bar (0.030f, 0.22f);   // soft glow
+        bar (0.013f, 0.95f);   // solid core
     }
 
+    // Atoms. Large molecules (>8 atoms): flat discs (cheap). Small: 3D harmonics.
+    if (simple) {
+        for (int i = 0; i < n; ++i) {
+            const auto& atom = mol.atoms[(size_t) i];
+            const float r = 0.05f * (float) std::cbrt (juce::jmax (1.0, atom.mass));
+            disc (pos[(size_t) i].x, pos[(size_t) i].y, r, atomColour (i));
+        }
+    } else {
     // Atoms as spherical-harmonic surfaces: radius = |Y_l^m(theta,phi)|, coloured
     // by the harmonic value (blue -> teal -> yellow), spinning with a fixed tilt.
     // Manual 3D projection into layout space; GL depth test handles occlusion.
@@ -396,10 +399,12 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
         }
 
         const float s = blob / vmax;   // normalise harmonic magnitude to blob size
+        const auto base = atomColour (i);   // palette colour for this atom
         auto emit = [&] (size_t k) {
             const float tt = juce::jlimit (-1.0f, 1.0f, val[k] / vmax);
             const float shade = 0.55f + 0.45f * (juce::jlimit (-1.0f, 1.0f, P[k].z / vmax) * 0.5f + 0.5f);
-            const auto col = juce::Colour::fromHSV (juce::jmap (tt, -1.0f, 1.0f, 0.66f, 0.13f), 0.85f, 0.95f * shade, 1.0f);
+            const float bri = shade * (0.45f + 0.55f * std::abs (tt));   // lobes bright, nodes dark
+            const auto col = base.withMultipliedBrightness (bri);
             glColor4f (col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(), 1.0f);
             glVertex3f ((ox + P[k].x * s) / aspect, oy + P[k].y * s, P[k].z * s);
         };
@@ -412,6 +417,7 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
         glEnd();
     }
     glDisable (GL_DEPTH_TEST);
+    }   // end harmonic-atom branch
 
     // Waveform scope as concentric circular rings around the molecule: the
     // sample index sweeps the angle, the value pushes the radius. Many copies
@@ -436,7 +442,8 @@ void QuantumSynthAudioProcessorEditor::renderOpenGL()
         glEnd();
 
         glLineWidth (1.5f);                                 // the waveform itself
-        glColor4f (0.66f * bright, 0.88f * bright, 0.39f * bright, 0.95f);
+        const auto rc = accents[ring % 4];                  // palette colour per ring
+        glColor4f (rc.getFloatRed() * bright, rc.getFloatGreen() * bright, rc.getFloatBlue() * bright, 0.95f);
         glBegin (GL_LINE_LOOP);
         for (int i = 0; i < W; ++i) {
             const float a = twoPi * (float) i / (float) W + (float) ring * phaseOffset;

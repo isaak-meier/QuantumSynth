@@ -68,10 +68,21 @@ private:
     double tSeconds = 0.0;        // shared oscillator clock, advanced per sample
 
     // Shared-molecule polyphony: each voice reads the one molecule at its own
-    // pitch, with a short attack/release level envelope.
+    // pitch, shaped by a per-voice ADSR amplitude envelope.
     static constexpr int kMaxVoices = 8;
-    struct Voice { int note = -1; double freq = 0.0; float level = 0.0f; bool held = false; };
+    enum class EnvStage { Idle, Attack, Decay, Sustain, Release };
+    struct Voice {
+        int note = -1; double freq = 0.0; bool held = false;
+        float level = 0.0f;                       // current envelope output (0..1)
+        EnvStage stage = EnvStage::Idle;          // which ADSR phase this voice is in
+    };
     std::array<Voice, kMaxVoices> voices {};
+
+    // ADSR amplitude envelope (attack/decay/release in seconds; sustain 0..1).
+    std::atomic<float> attackSec  { 0.01f };
+    std::atomic<float> decaySec   { 0.12f };
+    std::atomic<float> sustainLvl { 0.7f };
+    std::atomic<float> releaseSec { 0.25f };
     std::vector<Atom> initialAtoms;   // snapshot for resetMolecule()
     std::vector<double> baseBondK;    // original bond stiffness, for % changes
     std::vector<double> baseAngleK;   // original angle stiffness, for % changes
